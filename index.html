@@ -7,9 +7,11 @@
   <body>
     <div class="display">
       <div class="box input">
+        <h3>Camera</h3>
         <video autoplay playsinline id="video" />
       </div>
       <div class="box output">
+        <h3>Enhanced Display</h3>
         <canvas id="canvas"></canvas>
       </div>
     </div>
@@ -34,8 +36,38 @@
           video.srcObject = mediaStream;
         }
 
-        function getPixel(x, y, imageWidth) {
-          return (y * imageWidth + x) * 4;
+        /**
+         * @return Array
+         */
+        function getChannels(x, y, imageWidth) {
+          const index = (y * imageWidth + x) * 4;
+          return {
+            r: index + 0,
+            g: index + 1,
+            b: index + 2,
+            a: index + 3,
+          };
+        }
+
+        function wrapIndex(index, max) {
+          // wrap if greater than max
+          if (index > max) return index % max;
+
+          // wrap if less than min
+          if (index < 0) return (index % max) + max;
+
+          // other wise do nothing
+          return index;
+        }
+
+        function getPixel(index, data) {
+          const i = wrapIndex(index, data.length);
+          return {
+            r: data[i + 0],
+            g: data[i + 1],
+            b: data[i + 2],
+            a: data[i + 3],
+          };
         }
 
         function clamp(value) {
@@ -210,26 +242,127 @@
           return [r * 255, g * 255, b * 255];
         }
 
+        /**
+         * pixel kernel region
+         * aw | bw | cw
+         * dw | ew | fw
+         * gw | hw | iw
+         *
+         * @param e the source pixel
+         * @return Array [index, weight]
+         */
+        function getSurrounding(e, width) {
+          const a = e - 4 * width - 4;
+          const b = e - 4 * width;
+          const c = e - 4 * width + 4;
+          const d = e - 4;
+          const f = e + 4;
+          const g = e + 4 * width - 4;
+          const h = e + 4 * width;
+          const i = e + 4 * width + 4;
+          return [
+            [a, 1],
+            [b, 2],
+            [c, 1],
+            [d, 2],
+            [e, 4],
+            [f, 2],
+            [g, 1],
+            [h, 2],
+            [i, 1],
+          ];
+        }
+
+        /** Calculate and return the euclidean distance between two points. */
+        function hypot(xi, yi, xf, yf) {
+          return Math.sqrt(Math.pow(xi - xf, 2) + Math.pow(yi - yf, 2));
+        }
+
+        /** Generates an identity matrix of size (dim x dim). */
+        function eye(dim) {
+          var mat = new Array(dim * dim);
+
+          for (var i = 0; i < dim; i++) {
+            for (var j = 0; j < dim; j++) {
+              mat[i * dim + j] = j == i ? 1.0 : 0.0;
+            }
+          }
+
+          return mat;
+        }
+
+        /** 
+         * Generates a Gaussian Blur kernel for matrix processing.
+          @param dim Length of one side of the kernel (Must be odd).
+          @param sigma Standard deviation of the gaussian function.
+          @returns A 1D array holding the resulting (dim x dim) kernel.
+        */
+        function buildKernel(dim, sigma) {
+          var kernel = [];
+          var center = (dim - 1) / 2;
+
+          for (var i = 0; i < dim; i++) {
+            for (var j = 0; j < dim; j++) {
+              var dist = hypot(i, j, center, center);
+              var a = 1 / Math.sqrt(Math.PI * 2 * sigma * sigma);
+              var samp =
+                a * Math.exp(-1 * (Math.pow(dist, 2) / (2 * sigma * sigma)));
+
+              kernel.push(samp);
+            }
+          }
+
+          return normalize(kernel);
+        }
+
+        /** Returns a normalized array such that the sum of all elements is 1.0 */
+        function normalize(arr) {
+          let sum = 0.0;
+
+          for (let i = 0; i < arr.length; i++) {
+            sum += arr[i];
+          }
+
+          for (let i = 0; i < arr.length; i++) {
+            arr[i] = arr[i] / sum;
+          }
+
+          return arr;
+        }
+
         function processPixels(width, height, imageData) {
           const data = new Uint8ClampedArray([...imageData]);
+          const blurRadius = 7;
 
           for (let i = 0; i < height; i++) {
             for (let j = 0; j < width; j++) {
-              const pixelIndex = getPixel(i, j, height);
-              const redIndex = pixelIndex + R_OFFSET;
-              const greenIndex = pixelIndex + G_OFFSET;
-              const blueIndex = pixelIndex + B_OFFSET;
+              const index = (i * width + j) * 4;
 
-              const redValue = data[redIndex];
-              const greeValue = data[greenIndex];
-              const blueValue = data[blueIndex];
+              const surrounding = getSurrounding(index, width).map(
+                ([p, weight]) => [getPixel(p, data), weight]
+              );
 
-              const [h, s, v] = rgb2hsv(redValue, greeValue, blueValue);
-              const [r, g, b] = hsv2rgb(h, s + 0.2, v + 0.2);
+              let r = 0;
+              let g = 0;
+              let b = 0;
 
-              data[redIndex] = clamp(r);
-              data[greenIndex] = clamp(g);
-              data[blueIndex] = clamp(b);
+              surrounding.forEach(([p, w]) => {
+                r += p.r;
+                g += p.g;
+                b += p.b;
+              });
+
+              // Average them out
+              r /= 9;
+              g /= 9;
+              b /= 9;
+
+              // const [h, s, v] = rgb2hsv(redValue, greeValue, blueValue);
+              // const [r, g, b] = hsv2rgb(h, s, v + 0.5);
+
+              data[index + 0] = r;
+              data[index + 1] = g;
+              data[index + 2] = b;
             }
           }
 
@@ -261,6 +394,10 @@
 
           window.requestAnimationFrame(drawToCanvas);
         }
+
+        const kernel = buildKernel(5, 6);
+
+        console.log("kernel", kernel);
 
         await openCamera();
         window.requestAnimationFrame(drawToCanvas);
