@@ -3,6 +3,14 @@
   <head>
     <title>Learn Computer Vision: Canvas</title>
     <link href="style.css" rel="stylesheet" />
+    <!-- Require the peer dependencies. -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+
+    <!-- You must explicitly require a TF.js backend if you're not using the TF.js union bundle. -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-segmentation"></script>
   </head>
   <body>
     <div class="display">
@@ -17,7 +25,24 @@
     </div>
     <div class="controls"></div>
     <script type="text/javascript">
+      stopRunning = false;
       (async () => {
+        const model =
+          bodySegmentation.SupportedModels.MediaPipeSelfieSegmentation;
+        const segmenterConfig = {
+          runtime: "mediapipe",
+          solutionPath:
+            "https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation",
+          // or 'base/node_modules/@mediapipe/selfie_segmentation' in npm.
+        };
+        const segmenter = await bodySegmentation.createSegmenter(
+          model,
+          segmenterConfig
+        );
+
+        tf.setBackend("webgl");
+        await tf.ready();
+
         const R_OFFSET = 0;
         const G_OFFSET = 1;
         const B_OFFSET = 2;
@@ -62,12 +87,7 @@
 
         function getPixel(index, data) {
           const i = wrapIndex(index, data.length);
-          return {
-            r: data[i + 0],
-            g: data[i + 1],
-            b: data[i + 2],
-            a: data[i + 3],
-          };
+          return [data[i + 0], data[i + 1], data[i + 2], data[i + 3]];
         }
 
         function clamp(value) {
@@ -242,39 +262,63 @@
           return [r * 255, g * 255, b * 255];
         }
 
-        function processPixels(width, height, imageData) {
+        async function processPixels(
+          width,
+          height,
+          imageData,
+          segmentedImageData
+        ) {
           const data = new Uint8ClampedArray([...imageData]);
-          const kernelSize = 9; // has to be odd
+          const kernelSize = 13;
 
           for (let i = 0; i < height; i++) {
             for (let j = 0; j < width; j++) {
               const index = (i * width + j) * 4;
 
-              const kernel = buildKernel(kernelSize, index, width);
-              const surrounding = kernel.map((p) => getPixel(p, data));
+              let [r, g, b] = getPixel(index, imageData);
+              let [sR, sG, sB] = getPixel(index, segmentedImageData);
 
-              let r = 0;
-              let g = 0;
-              let b = 0;
-
-              surrounding.forEach((p) => {
-                r += p.r;
-                g += p.g;
-                b += p.b;
-              });
-
-              // Average them out
-              const div = kernelSize * kernelSize;
-              r /= div;
-              g /= div;
-              b /= div;
-
-              // const [h, s, v] = rgb2hsv(redValue, greeValue, blueValue);
-              // const [r, g, b] = hsv2rgb(h, s, v + 0.5);
-
+              const [h, s, v] = rgb2hsv(r, g, b);
+              [r, g, b] = hsv2rgb(h, s + 0.2, v);
               data[index + 0] = r;
               data[index + 1] = g;
               data[index + 2] = b;
+
+              // is pixel part of person
+              // if (sR !== 0 && sG === 0 && sB === 0) {
+              //   const [h, s, v] = rgb2hsv(r, g, b);
+              //   [r, g, b] = hsv2rgb(h, s + 0.2, v);
+              //   data[index + 0] = r;
+              //   data[index + 1] = g;
+              //   data[index + 2] = b;
+              // } else {
+              //   const kernel = buildKernel(kernelSize, index, width);
+              //   const surrounding = kernel.map((p) => getPixel(p, imageData));
+
+              //   // console.log(surrounding);
+
+              //   r = 0;
+              //   g = 0;
+              //   b = 0;
+
+              //   surrounding.forEach((p) => {
+              //     r += p[0];
+              //     g += p[1];
+              //     b += p[2];
+              //   });
+
+              //   // Average them out
+              //   const div = kernelSize * kernelSize;
+              //   r /= div;
+              //   g /= div;
+              //   b /= div;
+
+              //   // console.log(r, g, b);
+
+              //   data[index + 0] = r;
+              //   data[index + 1] = g;
+              //   data[index + 2] = b;
+              // }
             }
           }
 
@@ -301,7 +345,10 @@
           return kernels;
         }
 
-        function drawToCanvas() {
+        async function drawToCanvas() {
+          if (stopRunning) {
+            return;
+          }
           const height = video.videoHeight;
           const width = video.videoWidth;
 
@@ -310,11 +357,30 @@
           ctx.drawImage(video, 0, 0, width, height);
 
           if (width > 0 && height > 0) {
+            const segmentation = await segmenter.segmentPeople(video);
+            const foregroundThreshold = 0.5;
+            const backgroundBlurAmount = 9;
+            const edgeBlurAmount = 3;
+            const flipHorizontal = false;
+            const [people] = segmentation;
+
+            await bodySegmentation.drawBokehEffect(
+              canvas,
+              video,
+              segmentation,
+              foregroundThreshold,
+              backgroundBlurAmount,
+              edgeBlurAmount,
+              flipHorizontal
+            );
+
             const imageData = ctx.getImageData(0, 0, width, height);
-            const processedPixels = processPixels(
+            const segmentedImageData = await people.mask.toImageData();
+            const processedPixels = await processPixels(
               width,
               height,
-              imageData.data.slice()
+              imageData.data.slice(),
+              segmentedImageData.data.slice()
             );
 
             for (let i = 0; i < imageData.data.length; i++) {
@@ -330,6 +396,9 @@
         await openCamera();
         window.requestAnimationFrame(drawToCanvas);
       })();
+      window.stop = function () {
+        stopRunning = true;
+      };
     </script>
   </body>
 </html>
