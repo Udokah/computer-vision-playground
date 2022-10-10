@@ -242,120 +242,32 @@
           return [r * 255, g * 255, b * 255];
         }
 
-        /**
-         * pixel kernel region
-         * aw | bw | cw
-         * dw | ew | fw
-         * gw | hw | iw
-         *
-         * @param e the source pixel
-         * @return Array [index, weight]
-         */
-        function getSurrounding(e, width) {
-          const a = e - 4 * width - 4;
-          const b = e - 4 * width;
-          const c = e - 4 * width + 4;
-          const d = e - 4;
-          const f = e + 4;
-          const g = e + 4 * width - 4;
-          const h = e + 4 * width;
-          const i = e + 4 * width + 4;
-          return [
-            [a, 1],
-            [b, 2],
-            [c, 1],
-            [d, 2],
-            [e, 4],
-            [f, 2],
-            [g, 1],
-            [h, 2],
-            [i, 1],
-          ];
-        }
-
-        /** Calculate and return the euclidean distance between two points. */
-        function hypot(xi, yi, xf, yf) {
-          return Math.sqrt(Math.pow(xi - xf, 2) + Math.pow(yi - yf, 2));
-        }
-
-        /** Generates an identity matrix of size (dim x dim). */
-        function eye(dim) {
-          var mat = new Array(dim * dim);
-
-          for (var i = 0; i < dim; i++) {
-            for (var j = 0; j < dim; j++) {
-              mat[i * dim + j] = j == i ? 1.0 : 0.0;
-            }
-          }
-
-          return mat;
-        }
-
-        /** 
-         * Generates a Gaussian Blur kernel for matrix processing.
-          @param dim Length of one side of the kernel (Must be odd).
-          @param sigma Standard deviation of the gaussian function.
-          @returns A 1D array holding the resulting (dim x dim) kernel.
-        */
-        function buildKernel(dim, sigma) {
-          var kernel = [];
-          var center = (dim - 1) / 2;
-
-          for (var i = 0; i < dim; i++) {
-            for (var j = 0; j < dim; j++) {
-              var dist = hypot(i, j, center, center);
-              var a = 1 / Math.sqrt(Math.PI * 2 * sigma * sigma);
-              var samp =
-                a * Math.exp(-1 * (Math.pow(dist, 2) / (2 * sigma * sigma)));
-
-              kernel.push(samp);
-            }
-          }
-
-          return normalize(kernel);
-        }
-
-        /** Returns a normalized array such that the sum of all elements is 1.0 */
-        function normalize(arr) {
-          let sum = 0.0;
-
-          for (let i = 0; i < arr.length; i++) {
-            sum += arr[i];
-          }
-
-          for (let i = 0; i < arr.length; i++) {
-            arr[i] = arr[i] / sum;
-          }
-
-          return arr;
-        }
-
         function processPixels(width, height, imageData) {
           const data = new Uint8ClampedArray([...imageData]);
-          const blurRadius = 7;
+          const kernelSize = 9; // has to be odd
 
           for (let i = 0; i < height; i++) {
             for (let j = 0; j < width; j++) {
               const index = (i * width + j) * 4;
 
-              const surrounding = getSurrounding(index, width).map(
-                ([p, weight]) => [getPixel(p, data), weight]
-              );
+              const kernel = buildKernel(kernelSize, index, width);
+              const surrounding = kernel.map((p) => getPixel(p, data));
 
               let r = 0;
               let g = 0;
               let b = 0;
 
-              surrounding.forEach(([p, w]) => {
+              surrounding.forEach((p) => {
                 r += p.r;
                 g += p.g;
                 b += p.b;
               });
 
               // Average them out
-              r /= 9;
-              g /= 9;
-              b /= 9;
+              const div = kernelSize * kernelSize;
+              r /= div;
+              g /= div;
+              b /= div;
 
               // const [h, s, v] = rgb2hsv(redValue, greeValue, blueValue);
               // const [r, g, b] = hsv2rgb(h, s, v + 0.5);
@@ -367,6 +279,26 @@
           }
 
           return data;
+        }
+
+        /**
+         * @param size must be odd
+         * @param originIndex origin pixel index
+         * @param width of the image
+         *
+         * @return 1D Array
+         */
+        function buildKernel(size, originIndex, width) {
+          const kernels = [];
+          const mid = Math.floor(size / 2);
+
+          for (let i = 0; i < size; i++) {
+            for (let j = 0; j < size; j++) {
+              kernels.push(originIndex + (i - mid) * 4 * width + (j - mid) * 4);
+            }
+          }
+
+          return kernels;
         }
 
         function drawToCanvas() {
@@ -394,10 +326,6 @@
 
           window.requestAnimationFrame(drawToCanvas);
         }
-
-        const kernel = buildKernel(5, 6);
-
-        console.log("kernel", kernel);
 
         await openCamera();
         window.requestAnimationFrame(drawToCanvas);
